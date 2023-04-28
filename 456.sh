@@ -1,39 +1,80 @@
 #!/bin/bash
 
-# Define the subnet list to test
-subnets=( "173.245.48.0/20" "103.21.244.0/22" "103.22.200.0/22" "103.31.4.0/22" "141.101.64.0/18" "108.162.192.0/18" "190.93.240.0/20" "188.114.96.0/20" "197.234.240.0/22" "198.41.128.0/17" "162.158.0.0/15" "104.16.0.0/13" "104.24.0.0/14" "172.64.0.0/13" "131.0.72.0/22" )
+# 定义要测试的IP地址段
+ip_blocks=(
+    "173.245.48.0/20"
+    "103.21.244.0/22"
+    "103.22.200.0/22"
+    "103.31.4.0/22"
+    "141.101.64.0/18"
+    "108.162.192.0/18"
+    "190.93.240.0/20"
+    "188.114.96.0/20"
+    "197.234.240.0/22"
+    "198.41.128.0/17"
+    "162.158.0.0/15"
+    "104.16.0.0/13"
+    "104.24.0.0/14"
+    "172.64.0.0/13"
+    "131.0.72.0/22"
+)
 
-# Define the number of ping packets and the timeout period
-num_packets=10
-timeout_period=1
+# 定义测试结果存放数组
+declare -A results
 
-# Define a function to test the subnet
-test_subnet() {
-    subnet=$1
-    ping_result=$(ping -c $num_packets -W $timeout_period $subnet)
-    packet_loss=$(echo "$ping_result" | awk '/packet loss/ {print $6}' | cut -d'%' -f1)
-    avg_latency=$(echo "$ping_result" | awk '/avg/ {print $4}' | cut -d'/' -f2)
+# 循环测试每个IP段的IP地址
+for block in "${ip_blocks[@]}"
+do
+    # 提取IP地址段和掩码
+    ip=$(echo "$block" | cut -d/ -f1)
+    mask=$(echo "$block" | cut -d/ -f2)
 
-    echo "$subnet packet_loss: $packet_loss, avg_latency: $avg_latency"
+    # 使用fping命令测试IP地址段内的所有IP地址
+    # -S选项指定源IP地址
+    # -q选项忽略输出结果
+    # -c选项指定测试次数
+    # -t选项指定超时时间
+    # -i选项指定间隔时间
+    # -b选项指定批处理模式，以提高效率
+    # -a选项只显示存活的主机
+    # -r选项指定将结果输出为数字形式的区间
+    # 注意：fping命令需要先安装
+    fping -S 192.168.0.8 -q -c 5 -t 100 $ip/$mask -i 100 -b -a -r 0 >> /dev/null &
 
-    # Output format: <subnet> <packet_loss> <avg_latency>
-    echo $subnet $packet_loss $avg_latency >> temp.txt
-}
-
-# Create an empty temp file to record the test results
-> temp.txt
-
-# Test each subnet using multiple threads
-for subnet in "${subnets[@]}"; do
-  test_subnet "$subnet" &
+    # 将每个IP地址段测试结果保存到字典中
+    results["$block"]=$!
 done
 
-# Wait for all tests to finish
+# 等待所有测试完成
 wait
 
-# Sort the results by packet loss and average latency, and output the best subnet
-best_subnet=$(sort -k2n,2 -k3n,3 temp.txt | head -n 1)
-echo "Best subnet: $best_subnet"
+# 循环处理每个IP地址段的测试结果
+for block in "${ip_blocks[@]}"
+do
+    # 提取测试结果
+    # $?获取前面命令的退出状态，0表示没有丢包
+    # awk是一个文本处理工具，$NF表示最后一列，{}中是条件判断和输出语句
+    # shift命令将命令行参数左移
+    # 此处使用了管道符和重定向来进行文本处理
+    loss=$(grep -oP '(?<=\().*?(?=%)' "fping.${results[$block]}" | awk '{if($NF=="0%") {print $0}}' | head -1)
+    latency=$(grep -oP '(?<=\=).*' "fping.${results[$block]}" | awk '{print substr($0,1,length($0)-2)}' | sort -n | head -1)
 
-# Delete the temp file
-rm temp.txt
+    # 计算结果
+    metrics=""
+    if [ -n "$loss" ]; then
+        metrics="$metrics$loss "
+    else
+        metrics="$metrics- "
+    fi
+    if [ -n "$latency" ]; then
+        metrics="$metrics$latency"
+    else
+        metrics="$metrics-"
+    fi
+
+    # 输出结果
+    echo "$block: $metrics"
+done
+
+# 删除临时文件
+rm -f fping.*
